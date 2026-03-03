@@ -1,0 +1,407 @@
+---
+title: "COVID Trends Analysis"
+output: html_document
+date: "2026-03-01"
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE, results='hide'}
+knitr::opts_chunk$set(echo = TRUE)
+
+# this analysis requires Tidyverse- please make sure it's installed!
+library(tidyverse)
+```
+
+# COVID-19: Trends in cases and deaths
+
+This report analyses the outbreak and spread of the COVID-19 pandemic. COVID caught us by surprise, and spread like wildfire around the globe. Yet medical professionals and public health personnel quickly sprang into action to stop the spread and save lives. Can we see these occurrences in the data? Can we model then accurately? This analysis will provide a successful model.
+
+## Importing and Cleaning the Data
+
+Data was provided by Johns Hopkins from [their COVID-19 dataset](https://github.com/CSSEGISandData/COVID-19). The data is split across four CSV files on the JHU Center for Systems Science and Engineering's Github, that must be individually loaded.
+
+```{r data.imports, message=FALSE, warning=FALSE, results='hide'}
+
+url.base <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/"
+urls.csv <- c(
+  "time_series_covid19_confirmed_US.csv",
+  "time_series_covid19_confirmed_global.csv",
+  "time_series_covid19_deaths_US.csv",
+  "time_series_covid19_deaths_global.csv"
+)
+urls <- str_c(url.base, urls.csv)
+
+cases.us.raw <- read_csv(urls[1])
+cases.global.raw <- read_csv(urls[2])
+deaths.us.raw <- read_csv(urls[3])
+deaths.global.raw <- read_csv(urls[4])
+```
+
+Now that the data is loaded, it must be cleaned and merged. I start with the United States. This dataset provides very granular data, down to the level of counties. I only want to analyze things down to the state level, so grouping is necessary. Deaths and cases are provided in two separate files, so once I filter, I must join the data into a single dataframe. Finally, I filter out non-state locations, such as the Diamond Princess and Grand Princess cruise ships.
+
+```{r us.data.cleanup, message=FALSE, warning=FALSE}
+
+# clean up the US cases data
+cases.us <- cases.us.raw %>%
+    select(-c(
+      UID, iso3, code3, Lat, Long_, iso2, FIPS, Admin2, Combined_Key
+    )) %>%
+    pivot_longer(
+      cols = -c(Country_Region, Province_State),
+      names_to = "Date",
+      values_to = "Cases"
+    ) %>%
+    mutate(
+      Country.or.region = Country_Region,
+      Province.or.state = Province_State,
+      Date = mdy(Date)
+    ) %>%
+    select(-c(
+      Country_Region, Province_State
+    )) %>%
+    group_by(
+      Country.or.region, Province.or.state, Date
+    ) %>%
+    summarise(Cases = sum(Cases)) %>%
+    ungroup()
+
+# clean up the US deaths data
+deaths.us <- deaths.us.raw %>%
+    select(-c(
+      UID, iso3, code3, Lat, Long_, iso2, FIPS, Admin2, Combined_Key
+    )) %>%
+    pivot_longer(
+      cols = -c(Country_Region, Province_State, Population),
+      names_to = "Date",
+      values_to = "Deaths"
+    ) %>%
+    mutate(
+      Country.or.region = Country_Region,
+      Province.or.state = Province_State,
+      Date = mdy(Date)
+    ) %>%
+    select(-c(
+      Country_Region, Province_State
+    )) %>%
+    group_by(
+      Country.or.region, Province.or.state, Date
+    ) %>%
+    summarise(Deaths = sum(Deaths), Population = sum(Population)) %>%
+    ungroup()
+
+# create one US dataframe with all the data necessary
+us <- cases.us %>% full_join(deaths.us)
+
+# filter out data items that aren't real states or territories
+non.state.locations <- c("Diamond Princess", "Grand Princess")
+us <- us %>% filter(!(Province.or.state %in% non.state.locations))
+
+summary(us)
+```
+
+A similar cleaning process is necessary for the global data. The global data for some countries is broken down by province or state, but not all. So I group by country. Cases and deaths are again provided as separate files that must be joined. Lastly, there are again some non-country locations that must be filtered, such as cruise ships and the Olympics.
+
+```{r global.data.cleanup, message=FALSE, warning=FALSE}
+# clean up the global cases data
+cases.global <- cases.global.raw %>%
+    select(-c(
+      Lat, Long
+    )) %>%
+    pivot_longer(
+      cols = -c(`Country/Region`, `Province/State`),
+      names_to = "Date",
+      values_to = "Cases"
+    ) %>% 
+    mutate(
+      Country.or.region = `Country/Region`,
+      Province.or.state = `Province/State`,
+      Date = mdy(Date)
+    ) %>%
+    select(-c(
+      `Country/Region`, `Province/State`
+    )) %>%
+    group_by(
+      Country.or.region, Date
+    ) %>%
+    summarise(Cases = sum(Cases)) %>%
+    ungroup()
+
+# clean up the global deaths data
+deaths.global <- deaths.global.raw %>%
+    select(-c(
+      Lat, Long
+    )) %>%
+    pivot_longer(
+      cols = -c(`Country/Region`, `Province/State`),
+      names_to = "Date",
+      values_to = "Deaths"
+    ) %>% 
+    mutate(
+      Country.or.region = `Country/Region`,
+      Province.or.state = `Province/State`,
+      Date = mdy(Date)
+    ) %>%
+    select(-c(
+      `Country/Region`, `Province/State`
+    )) %>%
+    group_by(
+      Country.or.region, Date
+    ) %>%
+    summarise(Deaths = sum(Deaths)) %>%
+    ungroup()
+
+# create one global dataframe, with all the necessary data 
+global <- cases.global %>% full_join(deaths.global)
+
+# filter out non-country locations
+non.country.locations <- c("Summer Olympics 2020", "Winter Olympics 2022", "MS Zaandam", "Diamond Princess")
+global <- global %>% filter(!(Country.or.region %in% non.country.locations))
+
+summary(global)
+```
+
+
+## Visualizing COVID in the US
+
+Now that the data is cleaned, let's visualize cases in the United States!
+
+First, let's view cases and deaths over time. A logarithmic scale is necessary to make both visible on the same graph.
+
+```{r us.plot, message=FALSE, warning=FALSE, results='hide'}
+us.plot.data <- us %>%
+  group_by(Country.or.region, Date) %>%
+  summarise(Cases = sum(Cases), Deaths = sum(Deaths))
+
+us.plot.data %>%
+  ggplot(aes(x = Date)) + 
+  geom_line(aes(y = Deaths, color = "blue")) +
+  geom_line(aes(y = Cases, color = "red")) +
+  scale_y_continuous(trans='log10') +
+  scale_color_hue(labels = c("Cases", "Deaths")) +
+  theme_minimal() +
+  labs(
+    y = "Cases & Deaths",
+    x  = "Date",
+    color = "Type"
+  )
+```
+
+Second, let's break down cases at the state level with a heatmap. To compare states apples to apples, I need to look at **cases per capita** instead of a raw count. Viewing the bands in the heatmap, it appears that most states had a similar experience: initial onset around the same time, followed by a series of spikes, likely when new variants broke out. However, two interesting trends are visible:
+
+- Island territories like Hawaii, the US Virgin Islands, and Guam had a later onset than the continental US.
+- "Red states" tended to hit a higher final level of cases than "blue states" did.
+
+```{r per.capita.us.cases.plot, message=FALSE, warning=FALSE, results='hide', fig.height=10}
+us.per.capita.cases <- us %>%
+  mutate(
+    Cases.per.capita = Cases / Population
+  )
+
+us.per.capita.cases %>%
+  ggplot(aes(x = Date, y = Province.or.state, fill = Cases.per.capita)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="blue") +
+  theme_minimal() +
+  labs(
+    y = "US State or Territory",
+    x  = "Date",
+    fill = "Cases per capita"
+  )
+```
+
+Plotting a heatmap for **deaths per capita** reveals similar trends to the cases per capita, but perhaps a bit more differentiated: 
+
+```{r per.capita.us.deaths.plot, message=FALSE, warning=FALSE, results='hide', fig.height=10}
+us.per.capita.deaths <- us %>%
+  mutate(
+    Deaths.per.capita = Deaths / Population
+  )
+
+us.per.capita.deaths %>%
+  ggplot(aes(x = Date, y = Province.or.state, fill = Deaths.per.capita)) + 
+  geom_tile() +
+  scale_fill_gradient(low="white", high="blue") +
+  theme_minimal() +
+  labs(
+    y = "US State or Territory",
+    x  = "Date",
+    fill = "Deaths per capita"
+  )
+```
+
+## Visualizing COVID globally
+
+Next, I turn my attention to the global data. I´d like to see how the US compares to other countries. To narrow my visualization, I rank each country by the total number of cases, and select the top 10. I then plot the number of cases over time. One interesting similarity is, similar to US states, we see every country have a spike around the same time. Conversely, an interesting _difference_ is that most of the top 10 countries successfully "flattened the curve" toward the end of the dataset, with a slower climb in case count. The US, on the other hand, continued to have a steep trend.
+
+```{r global.top.5.cases, message=FALSE, warning=FALSE, results='hide'}
+global.top.5 <- global %>%
+  group_by(Country.or.region) %>%
+  mutate(Max.cases = max(Cases)) %>%
+  ungroup() %>%
+  mutate(n = dense_rank(desc(Max.cases))) %>%
+  filter(n %in% 1:10)
+
+global.top.5 %>%
+  ggplot(aes(x = Date, group = Country.or.region, color = Country.or.region)) + 
+  geom_line(aes(y = Cases)) +
+  theme_minimal() +
+  labs(
+    y = "Cases",
+    x  = "Date",
+    color = "Country"
+  )
+```
+
+Plotting deaths over time reveal a similar trend. The US ends at a steeper slope than other countries do. Spikes are a bit less visible, which hypothetically could be due to other countries in the top 10 having a less-overwhelmed medical system, or due to later waves being somewhat less deeadly.
+
+```{r global.top.5.deaths, message=FALSE, warning=FALSE, results='hide'}
+global.top.5 %>%
+  ggplot(aes(x = Date, group = Country.or.region, color = Country.or.region)) + 
+  geom_line(aes(y = Deaths)) +
+  theme_minimal() +
+  labs(
+    y = "Deaths",
+    x  = "Date",
+    color = "Country"
+  )
+```
+
+## Modeling cases and deaths in the US
+
+Finally, I will attempt to model both cases and deaths over time, limiting my scope to the US. Before modeling, let's do a little data augmentation based on the trends observed above. I add these three pieces of data:
+
+- Whether the state is "red" or "blue". (Boolean)
+- Whether the state or territory is an island. (Boolean)
+- Whether the COVID-19 vaccine was released or not. (Boolean, true after US vaccine release)
+
+```{r us.model.data, message=FALSE, warning=FALSE, results='hide'}
+
+islands <- c("American Samoa", "Guam", "Hawaii", "Northern Mariana Islands", "Puerto Rico", "Virgin Islands")
+red.states <- c("Alaska", "Alabama", "Arizona", "Alaska", "Arkansas",
+                "Florida", "Georgia", "Idaho", "Indiana", "Iowa", "Kansas",
+                "Kentucky", "Louisiana", "Mississippi", "Missouri", "Montana",
+                "Nebraska", "North Carolina", "North Dakota", "Ohio",
+                "Oklahoma", "South Carolina", "South Dakota", "Tennessee",
+                "Texas", "Utah", "West Virginia", "Wyoming")
+us.for.model <- us %>%
+  mutate(
+    Island = Province.or.state %in% islands,
+    Vaccine.released = Date > "2020-12-17",
+    Cases.per.capita =  Cases / Population,
+    Deaths.per.capita = Deaths / Population,
+    Red.state = Province.or.state %in% red.states
+    )
+```
+
+Now that the data is ready, I will model cases. I hypothesized that these four features would impact cases:
+
+- **Date:** Cases increased over time.
+- **Island status:** COVID spread slower to islands, due to isolated populations.
+- **Vaccine availability:** Once the vaccine was out, it should have reduced transmission.
+- **Red vs. blue state:** Red states had higher levels of resistance to public health efforts to stop the thread, such as masking, social distancing, lockdowns, and vaccines.
+
+Evaluating the model, it appears pretty good! All the features are strongly statistically significant, and all have the hypothesized sign. Date, however, was by far the strongest factor, with the other three playing a smaller role. The adjusted R-squared is **0.901**, suggesting that over 90% of the observed variance is explained by this model.
+
+```{r us.model.cases, message=FALSE, warning=FALSE}
+model.cases = lm(Cases.per.capita ~ Date + Island + Vaccine.released + Red.state, data = us.for.model)
+
+summary(model.cases)
+```
+
+Plotting the predictions against the actual, the overall trajectory is relatively good. However, the model cannot capture the nonlinear spikes and troughs in COVID spread.
+
+```{r us.model.cases.plot, message=FALSE, warning=FALSE, results='hide'}
+us.cases.with.preds <- us.for.model %>%
+  mutate(
+    Predicted = predict(model.cases)
+  ) %>%
+  group_by(Country.or.region, Date) %>%
+  summarise(
+    Cases.per.capita = mean(Cases.per.capita),
+    Predicted = mean(Predicted),
+    ) %>%
+  ungroup() %>%
+  mutate(
+    Residual = Cases.per.capita - Predicted
+  )
+
+us.cases.with.preds %>%
+  ggplot() +
+  geom_line(aes(x = Date, y = Cases.per.capita, color = "red")) +
+  geom_line(aes(x = Date, y = Predicted, color = "red"), linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(
+    title = "Cases per capita: Observations vs. predictions",
+    y = "Cases per capita"
+    )
+```
+
+Plotting the residuals, they are clearly not normally distributed. There's a region where the model predicts _negative_ case counts, which is not meaningful in reality. Though the zero-line is roughly in the center of the distribution, there's a very clear wavy trend above and below. This suggests that the residuals are quite tightly related to the predictions, and nonlinearly. Not what we'd hope to see, but not surprising, given the chart above.
+
+```{r us.model.cases.residuals.plot, message=FALSE, warning=FALSE, results='hide'}
+us.cases.with.preds %>%
+  ggplot() +
+  geom_point(aes(x = Predicted, y = Residual, color = "red")) +
+  geom_hline(yintercept = 0) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Residuals vs. Predicted")
+```
+
+Second, I model deaths as well. Rather than a time-series, this model looks at cases as a function of deaths. I hypothesized these three features would impact deaths:
+
+- **Cases:** The more cases there are, the more deaths there will be.
+- **Vaccine availability:** Vaccines have a protective effect that reduces severity and fatality rates, so deaths should decrease after vaccine release.
+- **Red vs. blue state:** Red states had higher levels of vaccine resistance.
+
+This model is again fairly good, though a bit less strong than the last. Again, all hypothesized features are strongly statistically significant. R-squared is **0.7814**, which is pretty solid too. However, vaccine availability has the _opposite_ of the predicted sign, with a small magnitude, suggesting deaths were slightly higher after vaccine release rather than lower. How could this be? Three competing possibilities:
+
+- There is a confounding variable not taken into account.
+- Vaccine resisters were correct, and vaccines actually did worsen deaths.
+- Multicollinearity. If vaccination already decreased the rate of cases increasing, and this model is a function of cases, then the protective effect of vaccines may be partially or wholly captured in the cases already.
+
+Reflecting on the prior model, multicollnearity seems to be the most likely explanation. In that model, I determined that vaccines were indeed affecting cases per capita, with the expected sign. A confounding variable also seems quite possible. For this reason, we shouldn't believe that this model shows vaccines to be ineffective.
+
+```{r us.model.deaths, message=FALSE, warning=FALSE}
+# four factors I hypothesize will impact cases:
+# 1. cases (more infections means more people could die)
+# 2. whether the COVID vaccine was available (vaccine lowered fatality rate)
+# 3. whether it's a red state (lower vaccination uptake in red states)
+model.deaths = lm(Deaths.per.capita ~ Cases.per.capita + Vaccine.released + Red.state, data = us.for.model)
+
+summary(model.deaths)
+```
+
+Let's check the residuals here as well. Again, the residuals look strongly and nonlinearly correlated with the predictions.
+
+```{r us.model.deaths.residuals.plot, message=FALSE, warning=FALSE, results='hide'}
+us.deaths.with.preds <- us.for.model %>%
+  mutate(
+    Predicted = predict(model.deaths)
+  ) %>%
+  group_by(Country.or.region, Date) %>%
+  summarise(
+    Deaths.per.capita = mean(Deaths.per.capita),
+    Predicted = mean(Predicted),
+    ) %>%
+  ungroup() %>%
+  mutate(
+    Residual = Deaths.per.capita - Predicted
+  )
+
+us.deaths.with.preds %>%
+  ggplot() +
+  geom_point(aes(x = Predicted, y = Residual, color = "red")) +
+  geom_hline(yintercept = 0) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Residuals vs. Predicted")
+```
+
+## Sources of bias
+
+Lastly, it's important to reflect on possible sources of bias in the analysis:
+
+- Country-level data lacked population numbers, so it's hard to make apples-to-apples comparisons in the same way that I did for US states.
+- Case reporting is imperfect!
+  - Varied over time: at the beginning of the pandemic, there was little testing possible, then production ramped up over time.
+  - Varied by country: Richer countries have more complete public health systems. Also, some countries were accused of deliberately manipulating the data.
+- It can be hard to be certain how many deaths were due to COVID. There are reasons that could lead to both false negatives and false positives. Not all dead patients were tested, so some may slip through. Some patients with COVID died of other non-COVID causes, are these counted as deaths incorrectly? Further, how many deaths happened not due to the acute effects of the COVID infection, but later morbidity from the aftermath, especially in at-risk populations such as the elderly or immunocompromised?

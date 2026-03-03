@@ -1,0 +1,269 @@
+---
+title: "NYPD Shootings Analysis"
+output: html_document
+date: "2026-02-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## NYC shootings data
+
+This report analyzes shootings in the City of New York from 2006 to 2025. Data is sourced from the [Data.gov City of New York collection](https://catalog.data.gov/dataset/nypd-shootings/resource/e8892e88-ff68-4886-b0ab-190263861d38). Time-series and spatial analyses will be created.
+
+```{r foo, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(lubridate)
+library(tidymodels)
+
+url.historic <- "https://data.cityofnewyork.us/api/views/5ucz-vwe8/rows.csv?accessType=DOWNLOAD"
+
+shootings.incidents <- read_csv(url.historic) %>% distinct(INCIDENT_KEY, .keep_all = TRUE)
+```
+
+Let's clean the data. For this analysis, we'll focus on temporal and spatial variables: the date and time of the shooting, the borough and precinct it occurred in, and the type of location of the incident.
+
+```{r}
+cols.to.keep <- c("OCCUR_DATE", "OCCUR_TIME", "BORO", "LOC_OF_OCCUR_DESC", "PRECINCT", "LOC_CLASSFCTN_DESC")
+shootings.clean <- shootings.incidents %>%
+  select(all_of(cols.to.keep)) %>%
+  transmute(
+    Date = as.Date(OCCUR_DATE, format = "%m/%d/%Y"),
+    Hour.of.day = hour(OCCUR_TIME),
+    Borough = as.factor(BORO),
+    Precinct = as.character(PRECINCT),
+    Location = as.factor(LOC_OF_OCCUR_DESC),
+    Location.type = as.factor(LOC_CLASSFCTN_DESC)
+    )
+
+summary(shootings.clean)
+```
+
+## Shootings over time
+
+Plotting the shooting incidents over time illustrates three interesting trends in the shootings, at different levels of time granularity:
+
+1. A broad downward secular trend in gun violence. Later years, speaking generally, had less violence than earlier ones.
+2. A spike in gun violence as the COVID-19 pandemic hit NYC in mid-2020.
+3. A yearly cyclical trend, in which there is more gun violence in the summers, and less in the winters.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.by.month <- shootings.clean %>%
+  group_by(Month = floor_date(Date, "month")) %>%
+  summarise(Shootings = n())
+
+shootings.by.month.plot <- shootings.by.month %>%
+  ggplot(aes(x = Month, y = Shootings)) +
+  geom_line(aes(color = 'red')) +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly shootings in NYC")
+
+plot(
+  shootings.by.month.plot
+)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.by.month.trend.plot <- shootings.by.month %>%
+  ggplot(aes(x = Month, y = Shootings)) +
+  geom_line(aes(color = 'red')) +
+  geom_smooth(method = "lm") +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly shootings in NYC, with trendline")
+
+plot(
+  shootings.by.month.trend.plot
+)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.seasonality.plot <- shootings.by.month %>%
+  ggplot(aes(x = month(Month), y = Shootings, group = year(Month))) +
+  geom_line(aes(color = 'red')) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Seasonality of shootings in NYC", x = "Month")
+
+plot(
+  shootings.by.month.plot
+)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.by.year <- shootings.clean %>%
+  group_by(Year = floor_date(Date, "year")) %>%
+  summarise(Shootings = n()) %>%
+  ungroup() %>%
+  complete(Year, fill = list(Shootings = 0))
+
+shootings.by.year.plot <- shootings.by.year %>%
+  ggplot(aes(x = Year, y = Shootings)) +
+  geom_line(aes(color = "red")) +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Yearly shootings in NYC")
+
+plot(shootings.by.year.plot)
+```
+
+## Borough trends over time
+
+Breaking down the time series by borough illustrates that violence levels are not uniform. Brooklyn and the Bronx have the highest level of shootings, Manhattan and Queens a moderate level, and Staten Island the lowest. Within these tiers, rankings have shifted over time. In 2021, Queens overtook Manhattan in gun violence, and in 2023, the Bronx overtook Brooklyn.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.by.year.and.borough <- shootings.clean %>%
+  group_by(Year = floor_date(Date, "year"), Borough) %>%
+  summarise(Shootings = n()) %>%
+  ungroup() %>%
+  complete(Year, Borough, fill = list(Shootings = 0))
+
+shootings.by.year.and.borough.plot <- shootings.by.year.and.borough %>%
+  ggplot(aes(x = Year, y = Shootings, group = Borough, color = Borough)) +
+  geom_line() +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Yearly shootings in NYC, by borough")
+
+plot(shootings.by.year.and.borough.plot)
+```
+
+## Where do shootings happen?
+
+Mapping the shootings reveals that violence rates are quite distinct by precinct. Certain precincts have dramatically higher violence rates even than others within the same borough. These are grouped into 3 primary clusters: the largest in east Brooklyn, the next throughout most of The Bronx but crossing into north Manhattan, and the last in east Queens, around and to the north of JFK International Airport.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# using Matt Herman's `nycgeo` package for map shapes: https://github.com/mfherman/nycgeo
+library(nycgeo)
+library(sf)
+
+shootings.by.precinct <- shootings.clean %>%
+  group_by(Precinct) %>%
+  summarise(Shootings = n())
+
+nyc.precincts <- nyc_boundaries(geography = "police")
+st_crs(nyc.precincts) <- st_crs(nyc.precincts)
+
+shootings.by.precinct.geo <- nyc.precincts %>%
+  left_join(shootings.by.precinct, by = c("police_precinct_id" = "Precinct"))
+
+shootings.by.precinct.plot <- shootings.by.precinct.geo %>%
+  ggplot() +
+  geom_sf(aes(fill = Shootings)) +
+  scale_fill_viridis_c(name = "# of shootings") +
+  theme_void() +
+  labs(title = "Which precincts have the most shootings?")
+
+plot(shootings.by.precinct.plot)
+```
+
+It is also interesting to analyze what types of location shootings occur at: indoors vs. outdoors, housing vs. commercial, and so on. A huge majority of shootings occur outdoors. Of the shootings that occur indoors, the majority happen in dwellings or housing. Only a small fraction occur in commercial properties. All methods of transportation are dramatically safer than stationary locations.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.by.location.type <- shootings.clean %>%
+  drop_na(Location.type) %>%
+  group_by(Location, Location.type) %>%
+  summarise(Shootings = n())
+
+shootings.by.location.type.plot <- shootings.by.location.type %>%
+  ggplot(aes(y = Shootings, x = Location.type, fill = Location)) +
+  geom_bar(stat='identity') +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5))
+
+plot(shootings.by.location.type.plot)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.for.model <- shootings.clean %>%
+  group_by(Date = floor_date(Date, "month"), Borough) %>%
+  summarise(Shootings = n()) %>%
+  ungroup() %>%
+  complete(Date, Borough, fill = list(Shootings = 0)) %>%
+  mutate(
+    Month = as.factor(month(Date)),
+    Post.COVID.reopening = Date > "2020-06-01"
+  )
+
+model <- lm(Shootings ~ Date + Borough + Month + Post.COVID.reopening, data = shootings.for.model)
+
+summary(model)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+tidy_model <- tidy(model, conf.int = TRUE)
+glance_model <- glance(model) 
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.with.preds <- shootings.for.model %>%
+  mutate(
+    Predicted = predict(model),
+    Residual = Shootings - Predicted
+  ) %>%
+  group_by(Date = floor_date(Date, "year"), Borough) %>%
+  summarise(
+    Shootings = sum(Shootings),
+    Predicted = sum(Predicted)  
+  ) %>%
+  ungroup()
+
+
+yearly.with.preds.plot <- shootings.with.preds %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(x = Date, y = Shootings, group = Borough, color = Borough)) +
+  geom_line(aes(x = Date, y = Predicted, group = Borough, color = Borough), linetype = "dashed") +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Yearly actual and predicted shootings in NYC, by borough")
+
+plot(yearly.with.preds.plot)
+  
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.with.preds <- shootings.for.model %>%
+  mutate(
+    Predicted = predict(model)
+  ) %>%
+  group_by(Date) %>%
+  summarise(
+    Shootings = sum(Shootings),
+    Predicted = sum(Predicted),
+    Residual = Shootings - Predicted
+  ) %>%
+  ungroup()
+
+
+monthly.with.preds.plot <- shootings.with.preds %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(x = Date, y = Shootings, color = "red")) +
+  geom_line(aes(x = Date, y = Predicted, color = "red"), linetype = "dashed") +
+  scale_x_date(breaks = "year", date_labels = "%Y") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly actual and predicted shootings in NYC")
+
+plot(monthly.with.preds.plot)
+  
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+shootings.with.preds %>%
+  ggplot() +
+  geom_point(aes(x = Predicted, y = Residual, color = "red")) +
+  geom_hline(yintercept = 0) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  labs(title = "Residuals vs. Predicted")
+```
+
+## Potential sources of bias
+
+There are definitely some potential sources of bias:
+
+- The analyst might focus too much on locations that have negative media attention, or on locations that they personally are anxious about.
+- It is possible that shootings could go underreported in areas that have lower average police presence or lower trust in policing.
+- It is possible that the 2006 cutoff for the beginning of the dataset hides trends that would be obvious on a longer time horizon.
+- It is possible that looking only at the occurrence of a shooting, and not at demographic information about the perpetrator and victim, hides underlying trends
+
+I have dealt with the first point by ensuring I account for every location the dataset covers. A more thorough analysis might deal with the latter points by using a broader dataset, and might attempt to use statistical controls.
