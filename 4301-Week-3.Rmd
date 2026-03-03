@@ -12,6 +12,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This report analyzes shootings in the City of New York from 2006 to 2025. Data is sourced from the [Data.gov City of New York collection](https://catalog.data.gov/dataset/nypd-shootings/resource/e8892e88-ff68-4886-b0ab-190263861d38). Time-series and spatial analyses will be created.
 
+**Be aware that for this document to work, the following packages _must_ be installed:**
+
+- tidyverse
+- tidymodels
+- nycgeo
+- sf
+
+The two geo packages can be somewhat tricky to install. If you don´t have them working, remove the choropleth section in `Where do shootings happen?`.
+
 ```{r foo, message=FALSE, warning=FALSE, results='hide'}
 library(tidyverse)
 library(lubridate)
@@ -175,6 +184,8 @@ shootings.by.location.type.plot <- shootings.by.location.type %>%
 plot(shootings.by.location.type.plot)
 ```
 
+## Modeling shootings
+
 ```{r, message=FALSE, warning=FALSE, results='hide'}
 shootings.for.model <- shootings.clean %>%
   group_by(Date = floor_date(Date, "month"), Borough) %>%
@@ -195,6 +206,8 @@ summary(model)
 tidy_model <- tidy(model, conf.int = TRUE)
 glance_model <- glance(model) 
 ```
+
+## Plotting the model
 
 ```{r, message=FALSE, warning=FALSE, results='hide'}
 shootings.with.preds <- shootings.for.model %>%
@@ -261,9 +274,8 @@ shootings.with.preds %>%
 
 There are definitely some potential sources of bias:
 
+- This analysis is raw totals, not per-capita data. This could make very populous areas look more violent than they really are.
 - The analyst might focus too much on locations that have negative media attention, or on locations that they personally are anxious about.
 - It is possible that shootings could go underreported in areas that have lower average police presence or lower trust in policing.
 - It is possible that the 2006 cutoff for the beginning of the dataset hides trends that would be obvious on a longer time horizon.
-- It is possible that looking only at the occurrence of a shooting, and not at demographic information about the perpetrator and victim, hides underlying trends
-
-I have dealt with the first point by ensuring I account for every location the dataset covers. A more thorough analysis might deal with the latter points by using a broader dataset, and might attempt to use statistical controls.
+- It is possible that looking only at the occurrence of a shooting, and not at demographic or socioeconomic information, might hide underlying trends
