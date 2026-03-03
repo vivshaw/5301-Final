@@ -198,13 +198,13 @@ shootings.for.model <- shootings.clean %>%
   )
 
 model <- lm(Shootings ~ Date + Borough + Month + Post.COVID.reopening, data = shootings.for.model)
-
-summary(model)
 ```
 
-```{r, message=FALSE, warning=FALSE, results='hide'}
-tidy_model <- tidy(model, conf.int = TRUE)
-glance_model <- glance(model) 
+```{r, message=FALSE, warning=FALSE}
+
+# tidymodels makes a somewhat more legible display of results!
+model.tidy <- tidy(model, conf.int = TRUE)
+model.tidy
 ```
 
 ## Plotting the model
